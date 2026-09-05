@@ -175,9 +175,7 @@ export default function FomoDashboard() {
                     <td className="p-4 text-right flex flex-col items-end">
                       <span className="text-white font-bold">{formatUSD(token.mcap)}</span>
                       {/* Tag ATH MCAP */}
-                      <span className={`text-[10px] px-1 mt-1 border ${isPushingAth ? 'border-white bg-white text-black font-bold animate-pulse' : 'border-neutral-700 text-neutral-500'}`}>
-                        ATH: {formatUSD(token.athMcap)}
-                      </span>
+                      
                     </td>
                     <td className="p-4 text-right text-neutral-400">{formatUSD(token.liquidity)}</td>
                     <td className="p-4 text-right text-neutral-300">{token.buys}</td>
