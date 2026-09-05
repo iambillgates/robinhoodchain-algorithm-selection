@@ -2,30 +2,12 @@ import { NextResponse } from 'next/server';
 
 const FOMO_SCORE_THRESHOLD = 20;
 
-// Fungsi helper untuk mengambil data dari Based Bot / API eksternal
-async function fetchBasedBotData(address: string) {
-  try {
-    // GANTI URL INI dengan endpoint API Based Bot yang Anda miliki
-    // Contoh: https://api.basedbot.com/v1/token/${address} atau API DexScreener
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
-      cache: 'no-store',
-      // headers: { "Authorization": "Bearer YOUR_API_KEY" } // Jika bot butuh API Key
-    });
-    const data = await res.json();
-    
-    // Sesuaikan path JSON di bawah ini dengan format asli dari Based Bot
-    const pair = data.pairs?.[0]; 
-    const currentMcap = pair?.fdv || 0;
-    
-    // Jika API tidak menyediakan ATH langsung, kita bisa estimasi dari harga tertinggi (jika ada)
-    // Asumsi API mengembalikan field `ath_mcap`, jika tidak ada fallback ke mcap saat ini
-    const athMcap = data.ath_mcap || pair?.athFdv || (currentMcap * 1.5); // Fallback simulasi
-    
-    return { currentMcap, athMcap };
-  } catch (error) {
-    return { currentMcap: 0, athMcap: 0 };
-  }
-}
+// ==========================================
+// IN-MEMORY ATH CACHE (Smart Tracker)
+// Server akan mengingat MCAP tertinggi dari setiap token
+// selama aplikasi ini menyala (berjalan di terminal)
+// ==========================================
+const athCache = new Map<string, number>();
 
 export async function GET(request: Request) {
   try {
@@ -34,9 +16,10 @@ export async function GET(request: Request) {
 
     const TARGET_API_URL = `https://robinhoodtrenches.com/api/radar?minutes=${minutes}&limit=100`;
 
+    // 1. Fetch data koin target dari Robinhood Trenches
     const response = await fetch(TARGET_API_URL, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
         "Referer": "https://robinhoodtrenches.com/",
       },
@@ -44,12 +27,15 @@ export async function GET(request: Request) {
     });
 
     if (!response.ok) throw new Error(`API Error: Status ${response.status}`);
-    const tokens = await response.json();
+    
+    const responseText = await response.text();
+    let tokens;
+    try { tokens = JSON.parse(responseText); } catch (e) { throw new Error("Terkena blokir Cloudflare target."); }
     if (!Array.isArray(tokens)) throw new Error("Struktur JSON tidak dikenali.");
 
     const now = Math.floor(Date.now() / 1000);
 
-    // 1. Hitung skor dasar
+    // 2. Kalkulasi Skor & Filter Token
     let fomoTokens = tokens.map((token: any) => {
       let score = 0;
       const buyers = token.buyers || 0;
@@ -73,26 +59,62 @@ export async function GET(request: Request) {
         volume: usdIn,
         ageMinutes: Math.max(0, ageMinutes),
         score: Math.round(score),
-        mcap: token.fdv || 0, // Mcap bawaan
-        athMcap: 0 // Placeholder
+        mcap: 0,
+        athMcap: 0 
       };
     })
     .filter((token: any) => token.score >= FOMO_SCORE_THRESHOLD)
-    .sort((a: any, b: any) => b.score - a.score);
+    .sort((a: any, b: any) => b.score - a.score)
+    .slice(0, 30); // Batasi 30 koin teratas agar DexScreener tidak menolak
 
-    // 2. Fetch data sekunder (Based Bot) HANYA untuk Top 30 token agar cepat
-    const topTokens = fomoTokens.slice(0, 30);
-    
-    const enrichedTokens = await Promise.all(topTokens.map(async (token) => {
-      const botData = await fetchBasedBotData(token.address);
-      return {
-        ...token,
-        mcap: botData.currentMcap > 0 ? botData.currentMcap : token.mcap,
-        athMcap: botData.athMcap > 0 ? botData.athMcap : token.mcap, // Fallback
-      };
-    }));
+    // 3. BULK FETCH DEXSCREENER (1 Request untuk banyak koin sekaligus)
+    if (fomoTokens.length > 0) {
+      // Gabungkan semua alamat CA dengan koma
+      const addresses = fomoTokens.map(t => t.address).join(',');
+      
+      try {
+        const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addresses}`, {
+          cache: 'no-store'
+        });
+        const dexData = await dexRes.json();
+        
+        // Buat mapping agar gampang dicocokkan
+        const dexMap = new Map();
+        if (dexData.pairs) {
+          dexData.pairs.forEach((pair: any) => {
+            const addr = pair.baseToken.address.toLowerCase();
+            // Ambil FDV (Fully Diluted Valuation / MCAP) tertinggi jika ada LP ganda
+            if (!dexMap.has(addr) || pair.fdv > dexMap.get(addr)) {
+              dexMap.set(addr, pair.fdv || 0);
+            }
+          });
+        }
 
-    return NextResponse.json({ success: true, timestamp: Date.now(), data: enrichedTokens });
+        // 4. Update data token dengan MCAP dan hitung ATH Real-time
+        fomoTokens = fomoTokens.map(token => {
+          const currentMcap = dexMap.get(token.address.toLowerCase()) || 0;
+          
+          // Logika Sistem Perekam ATH
+          let recordedAth = athCache.get(token.address) || 0;
+          
+          // Jika MCAP saat ini lebih tinggi dari rekor ATH sebelumnya, Update!
+          if (currentMcap > recordedAth) {
+            recordedAth = currentMcap;
+            athCache.set(token.address, recordedAth);
+          }
+
+          return {
+            ...token,
+            mcap: currentMcap,
+            athMcap: recordedAth
+          };
+        });
+      } catch (e) {
+        console.error("Gagal Bulk Fetch DexScreener:", e);
+      }
+    }
+
+    return NextResponse.json({ success: true, timestamp: Date.now(), data: fomoTokens });
 
   } catch (error: any) {
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
