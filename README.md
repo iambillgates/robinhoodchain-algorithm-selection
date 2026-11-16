@@ -1,36 +1,103 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# rhalgodetect — Robinhood Chain FOMO Radar
 
-## Getting Started
+A live dashboard that watches **newly launched memecoins on Robinhood Chain**,
+scores each one for momentum ("FOMO"), and shows a ranked table you can scan
+at a glance. Click any contract address to copy it.
 
-First, run the development server:
+**Live demo:** https://rhalgodetect.vercel.app
+
+> Viewer / scanner only. It never buys, sells, or connects a wallet.
+
+## Features
+
+- **Auto-refresh every 4 seconds** (pauses while the tab is hidden; START / STOP button)
+- **FOMO score per token**, computed from age, buyer count, USD inflow, and liquidity
+- **Market cap (FDV)** from DexScreener, plus an in-memory **all-time-high (ATH) tracker** —
+  tokens trading at ≥ 90% of their ATH get a `NEAR ATH` badge
+- **Search** by symbol or contract address
+- **Filters:** max age (15 min / 1 hour / 2 hours), minimum score (> 20 / > 30 / > 50),
+  display limit (15 / 50 items)
+- **Volume column** (USD inflow) and **click-to-copy contract address**
+- **Error banner** — if the upstream API is down or blocked, the failure is shown
+  instead of a silent empty table
+
+## How the FOMO score works
+
+`GET /api/fomo?minutes=120` fetches the newest launches, scores them, drops
+anything below the threshold, and returns the top 50 sorted by score.
+
+| Signal | Rule | Points |
+| --- | --- | --- |
+| Age | launched < 15 min ago | +30 |
+| Age | launched < 60 min ago | +15 |
+| Age | launched > 120 min ago | −10 |
+| Buyers | more than 5 buyers | +3 per buyer |
+| USD inflow | `usd_in` > 2000 | +15 |
+| Liquidity | liquidity > 1500 | +10 |
+
+Only tokens scoring **≥ 20** are shown. Tokenized stocks (`is_stock = 1`, e.g. META)
+are filtered out — this radar is for memecoins.
+
+## Run it locally
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. Production build:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build
+npm start
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Requires Node.js 20+. No database, no auth, no API keys.
 
-## Learn More
+## Configuration
 
-To learn more about Next.js, take a look at the following resources:
+Optional — copy `.env.example` to `.env` only if you need to override the
+upstream radar URL (for example if the upstream moves domain again):
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+cp .env.example .env
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Variable | Default | Description |
+| --- | --- | --- |
+| `RADAR_API_URL` | `https://rhtrenches.com/api/radar` | Full URL of the upstream new-launch radar API (no key needed) |
 
-## Deploy on Vercel
+## Data sources
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. **Upstream radar API — `rhtrenches.com/api/radar`.** An unofficial
+   third-party endpoint (not Robinhood's, not a documented public API). The
+   app is fully dependent on it: if the site blocks the server IP or changes
+   its response shape, the table shows an error instead of data.
+2. **DexScreener — `api.dexscreener.com`** (free, no key). Used for FDV /
+   market cap, fetched in batches of up to 30 token addresses per request.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Known limitations
+
+- **ATH is in-memory only.** The highest market cap per token is kept in a
+  server-side `Map`, so it resets on every restart / redeploy, and on
+  serverless hosting each function instance has its own map. There is no
+  persistence yet.
+- **No caching.** Every poll hits the upstream radar API and DexScreener
+  directly (`cache: 'no-store'`).
+- **Single upstream.** There is no fallback source if the radar API goes down.
+
+## Tech stack
+
+Next.js 16.3.4 (App Router) · React 19.2.8 · TypeScript (strict) ·
+Tailwind CSS v4. Zero extra runtime dependencies.
+
+## Disclaimer
+
+This is a momentum scanner, not financial advice. Memecoins are extremely
+volatile and most new launches lose most of their value quickly. Do your own
+research, never invest more than you can afford to lose, and verify any
+contract address on DexScreener before interacting with it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
